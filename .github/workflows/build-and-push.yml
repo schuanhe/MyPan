@@ -6,63 +6,104 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write # 赋予创建 Release 的权限
+
 jobs:
   build-backend:
+    name: Build & Release Backend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 登录 Docker Hub
+      # 1. 在虚拟机环境编译后端（为了拿到二进制文件发布）
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25" # 匹配你的 go.mod
+
+      - name: Build Binary
+        working-directory: backend
+        run: |
+          go mod download
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o mypan-server-linux-amd64 .
+
+      # 2. 推送 Docker 镜像
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 提取 Docker 元数据
+      - name: Extract Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/mypan-backend
           tags: |
             type=ref,event=branch
+            type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/setup-buildx-action@v3
-
-      - name: 构建并推送后端镜像
+      - name: Build & Push Docker
         uses: docker/build-push-action@v6
         with:
           context: backend
           file: backend/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          # 使用构建缓存加速
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # 3. 只有推标签时才上传到 Release
+      - name: Release Backend Binary
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: backend/mypan-server-linux-amd64
+          generate_release_notes: true
+
   build-frontend:
+    name: Build & Release Frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 登录 Docker Hub
+      # 1. 编译 Flutter Web 并打包
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.6" # 匹配你本地的版本
+          channel: 'stable'
+          cache: true
+
+      - name: Build Web Bundle
+        working-directory: frontend
+        run: |
+          flutter pub get
+          flutter build web --release
+          cd build/web && zip -r ../../../frontend-web.zip .
+
+      # 2. 推送 Docker 镜像
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 提取 Docker 元数据
+      - name: Extract Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/mypan-frontend
           tags: |
             type=ref,event=branch
+            type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/setup-buildx-action@v3
-
-      - name: 构建并推送前端镜像
+      - name: Build & Push Docker
         uses: docker/build-push-action@v6
         with:
           context: frontend
@@ -71,3 +112,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 3. 只有推标签时才上传到 Release
+      - name: Release Frontend Web Zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: frontend-web.zip
