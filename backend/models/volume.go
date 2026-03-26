@@ -21,6 +21,6 @@ type Volume struct {
 	OwnerID        uint         `gorm:"index"`
 	// 开放卷相关
 	AccessMode     VolumeAccess `gorm:"default:'private'"`
-	AccessURLKey   string       `gorm:"uniqueIndex"` // 公开访问的短 URL key，如 /s/abc123
+	AccessURLKey   *string      `gorm:"uniqueIndex"` // 公开访问的短 URL key，如 /s/abc123
 	AccessPassword string       // bcrypt hash，仅 password 模式使用
 }

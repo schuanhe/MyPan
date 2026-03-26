@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,6 +42,10 @@ func PublicVolumeIndex(c *gin.Context) {
 		if err != nil || cookie != "ok" {
 			// 如果是 POST，验证密码
 			if c.Request.Method == "POST" {
+				if !utils.SharePasswordLimiter.Allow(c.ClientIP()) {
+					renderPasswordPage(c, key, "尝试次数过多，请稍后再访问")
+					return
+				}
 				pwd := c.PostForm("password")
 				if bcrypt.CompareHashAndPassword([]byte(vol.AccessPassword), []byte(pwd)) == nil {
 					c.SetCookie(publicCookieName+"_"+key, "ok", 3600*24, "/", "", false, true)
@@ -138,132 +143,112 @@ func PublicVolumeDownload(c *gin.Context) {
 	c.File(realPath)
 }
 
-// renderPasswordPage 渲染密码输入页
-func renderPasswordPage(c *gin.Context, key, errMsg string) {
-	errHTML := ""
-	if errMsg != "" {
-		errHTML = fmt.Sprintf(`<p style="color:red;margin:8px 0">%s</p>`, errMsg)
-	}
-	html := fmt.Sprintf(`<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8">
+const passwordPageTmpl = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8">
 <title>访问受保护存储卷</title>
 <style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f3f4f6}
 .box{background:#fff;padding:32px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);min-width:300px;text-align:center}
 h2{margin:0 0 16px;font-size:1.2rem;color:#1f2937}
-input{width:100%%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:1rem;box-sizing:border-box;margin-bottom:12px}
-button{width:100%%;padding:10px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer}
+input{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:1rem;box-sizing:border-box;margin-bottom:12px}
+button{width:100%;padding:10px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer}
 button:hover{background:#4338ca}</style></head>
 <body><div class="box">
-<h2>🔒 需要访问密码</h2>%s
-<form method="POST"><input type="password" name="password" placeholder="请输入访问密码" autofocus><button type="submit">确认访问</button></form>
-</div></body></html>`, errHTML)
+<h2>🔒 需要访问密码</h2>{{if .Error}}<p style="color:red;margin:8px 0">{{.Error}}</p>{{end}}
+<form method="POST"><input type="password" name="password" placeholder="请输入访问密码" autofocus required><button type="submit">确认访问</button></form>
+</div></body></html>`
+
+func renderPasswordPage(c *gin.Context, key, errMsg string) {
+	tmpl := template.Must(template.New("pwd").Parse(passwordPageTmpl))
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.String(http.StatusOK, html)
+	tmpl.Execute(c.Writer, map[string]string{"Error": errMsg})
 }
 
-// renderFileList 渲染文件列表 HTML 页
-func renderFileList(c *gin.Context, vol models.Volume, relPath string) {
-	realDir, err := utils.GetFileRealDir(vol.FolderName, relPath)
-	if err != nil {
-		c.String(http.StatusBadRequest, "非法路径")
-		return
-	}
-
-	entries, err := os.ReadDir(realDir)
-	if err != nil {
-		c.String(http.StatusInternalServerError, "读取目录失败")
-		return
-	}
-
-	key := vol.AccessURLKey
-	
-	// 生成面包屑导航
-	breadcrumbHTML := fmt.Sprintf(`<a href="/s/%s">全部文件</a>`, key)
-	if relPath != "" {
-		parts := strings.Split(filepath.ToSlash(relPath), "/")
-		accumulatedPath := ""
-		for _, part := range parts {
-			if part == "" {
-				continue
-			}
-			if accumulatedPath == "" {
-				accumulatedPath = part
-			} else {
-				accumulatedPath = accumulatedPath + "/" + part
-			}
-			breadcrumbHTML += fmt.Sprintf(` <span>&rsaquo;</span> <a href="/s/%s?path=%s">%s</a>`, key, accumulatedPath, part)
-		}
-	}
-
-	rows := ""
-	for _, e := range entries {
-		info, _ := e.Info()
-		name := e.Name()
-		childPath := filepath.ToSlash(filepath.Join(relPath, name))
-
-		if e.IsDir() {
-			rows += fmt.Sprintf(`<tr><td>📁 <a href="/s/%s?path=%s">%s</a></td><td>-</td><td>-</td><td>-</td></tr>`,
-				key, childPath, name)
-		} else {
-			size := humanSize(info.Size())
-			mod := info.ModTime().Format("2006-01-02 15:04")
-			// 文件名点击默认为预览 (preview=1)，右侧保留下载按钮
-			rows += fmt.Sprintf(`<tr><td>📄 <a href="/s/%s/download?path=%s&preview=1" target="_blank">%s</a></td><td>%s</td><td>%s</td><td><a href="/s/%s/download?path=%s" class="btn-download">下载</a></td></tr>`,
-				key, childPath, name, size, mod, key, childPath)
-		}
-	}
-
-	html := fmt.Sprintf(`<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8">
-<title>%s - MyPan 共享卷</title>
+const fileListTmpl = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8">
+<title>{{.VolName}} - MyPan 共享卷</title>
 <style>
 	body{font-family:sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#1f2937;background:#f9fafb}
 	.container{background:#fff;padding:32px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
 	h1{font-size:1.5rem;margin:0 0 20px 0;color:#111827;border-bottom:1px solid #eee;padding-bottom:15px}
 	.breadcrumb{color:#6b7280;font-size:0.95rem;margin-bottom:24px;background:#f3f4f6;padding:10px 16px;border-radius:8px;display:flex;align-items:center}
 	.breadcrumb a{color:#4f46e5;text-decoration:none;font-weight:500}
-	.breadcrumb a:hover{text-decoration:underline}
 	.breadcrumb span{margin:0 8px;color:#d1d5db;font-weight:bold}
-	table{width:100%%;border-collapse:collapse;margin-top:10px}
+	table{width:100%;border-collapse:collapse;margin-top:10px}
 	th{text-align:left;padding:12px 10px;background:#f9fafb;border-bottom:2px solid #e5e7eb;font-size:0.85rem;color:#6b7280;text-transform:uppercase}
 	td{padding:14px 10px;border-bottom:1px solid #f3f4f6;font-size:0.95rem}
 	tr:hover td{background:#fafafa}
 	.empty{text-align:center;padding:60px;color:#9ca3af;font-style:italic}
+    .btn-download{color:#4f46e5;text-decoration:none}
 </style></head>
 <body><div class="container">
-	<h1>📦 %s</h1>
-	<div class="breadcrumb">%s</div>
+	<h1>📦 {{.VolName}}</h1>
+	<div class="breadcrumb">{{.Breadcrumb}}</div>
 	<table><thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead>
-	<tbody>%s%s</tbody></table>
-</div></body></html>`,
-		vol.Name, vol.Name, breadcrumbHTML, 
-		rows,
-		func() string {
-			if len(entries) == 0 {
-				return `<tr><td colspan="4" class="empty">此目录为空</td></tr>`
-			}
-			return ""
-		}())
+	<tbody>{{range .Files}}
+		<tr>
+			<td>{{if .IsDir}}📁 <a href="/s/{{$.Key}}?path={{.RelPath}}">{{.Name}}</a>{{else}}📄 <a href="/s/{{$.Key}}/download?path={{.RelPath}}&preview=1" target="_blank">{{.Name}}</a>{{end}}</td>
+			<td>{{.Size}}</td><td>{{.ModTime}}</td><td>{{if not .IsDir}}<a href="/s/{{$.Key}}/download?path={{.RelPath}}" class="btn-download">下载</a>{{else}}-{{end}}</td>
+		</tr>
+	{{else}}<tr><td colspan="4" class="empty">此目录为空</td></tr>{{end}}
+	</tbody></table>
+</div></body></html>`
 
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.String(http.StatusOK, html)
+type fileEntry struct {
+	Name    string
+	RelPath string
+	IsDir   bool
+	Size    string
+	ModTime string
 }
 
-func humanSize(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
+func renderFileList(c *gin.Context, vol models.Volume, relPath string) {
+	realDir, err := utils.GetFileRealDir(vol.FolderName, relPath)
+	if err != nil {
+		c.String(http.StatusBadRequest, "非法路径")
+		return
 	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
+	entries, _ := os.ReadDir(realDir)
+	key := utils.PtrToString(vol.AccessURLKey)
+
+	// 面包屑生成
+	breadcrumbHTML := template.HTML(fmt.Sprintf(`<a href="/s/%s">全部文件</a>`, key))
+	if relPath != "" {
+		parts := strings.Split(filepath.ToSlash(relPath), "/")
+		accumulatedPath := ""
+		for _, part := range parts {
+			if part == "" { continue }
+			if accumulatedPath == "" { accumulatedPath = part } else { accumulatedPath += "/" + part }
+			breadcrumbHTML += template.HTML(fmt.Sprintf(` <span>&rsaquo;</span> <a href="/s/%s?path=%s">%s</a>`, key, accumulatedPath, part))
+		}
 	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+
+	files := make([]fileEntry, 0)
+	for _, e := range entries {
+		info, _ := e.Info()
+		files = append(files, fileEntry{
+			Name:    e.Name(),
+			RelPath: filepath.ToSlash(filepath.Join(relPath, e.Name())),
+			IsDir:   e.IsDir(),
+			Size:    utils.HumanSize(info.Size()),
+			ModTime: info.ModTime().Format("2006-01-02 15:04"),
+		})
+	}
+
+	tmpl := template.Must(template.New("list").Parse(fileListTmpl))
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	tmpl.Execute(c.Writer, map[string]interface{}{
+		"VolName":    vol.Name,
+		"Breadcrumb": breadcrumbHTML,
+		"Files":      files,
+		"Key":        key,
+	})
 }
 
 // 下面这行仅用于消除 time 包的 import 未使用警告（在渲染中 ModTime 已使用）
 // PublicLogin 处理公共登录页 GET/POST
 func PublicLogin(c *gin.Context) {
 	redirect := c.DefaultQuery("redirect", "/")
+	if !utils.IsSafeRedirect(redirect) {
+		redirect = "/"
+	}
 
 	if c.Request.Method == "GET" {
 		renderPublicLoginPage(c, "", redirect)
@@ -271,6 +256,10 @@ func PublicLogin(c *gin.Context) {
 	}
 
 	// POST 处理
+	if !utils.LoginLimiter.Allow(c.ClientIP()) {
+		renderPublicLoginPage(c, "尝试登录次数过多，请稍后再试", redirect)
+		return
+	}
 	username := c.PostForm("username")
 	password := c.PostForm("password")
 	durationStr := c.DefaultPostForm("duration", "604800") // 默认 7 天
@@ -289,59 +278,44 @@ func PublicLogin(c *gin.Context) {
 
 	token, _ := middlewares.GenerateToken(user.ID, user.Username, user.Role, duration)
 	c.SetCookie("mypan_token", token, int(duration), "/", "", false, true)
+	
+	// 重定向安全校验：确保 redirect 依然安全
+	if !utils.IsSafeRedirect(redirect) {
+		redirect = "/"
+	}
 	c.Redirect(http.StatusFound, redirect)
 }
 
-func renderPublicLoginPage(c *gin.Context, errMsg, redirect string) {
-	errHTML := ""
-	if errMsg != "" {
-		errHTML = fmt.Sprintf(`<div style="color:#ef4444;background:#fee2e2;padding:12px;border-radius:8px;margin-bottom:16px;font-size:0.9rem">%s</div>`, errMsg)
-	}
-
-	html := fmt.Sprintf(`<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8">
+const volLoginPageTmpl = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8">
 <title>登录 MyPan</title>
 <style>
 	body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f3f4f6}
-	.box{background:#fff;padding:40px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,.05);width:100%%;max-width:360px}
+	.box{background:#fff;padding:40px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,.05);width:100%;max-width:360px}
 	h2{margin:0 0 8px;font-size:1.5rem;color:#111827;text-align:center}
 	p{margin:0 0 32px;color:#6b7280;font-size:0.9rem;text-align:center}
 	.field{margin-bottom:20px}
 	label{display:block;margin-bottom:6px;font-size:0.85rem;color:#374151;font-weight:500}
-	input, select{width:100%%;padding:12px;border:1px solid #d1d5db;border-radius:8px;font-size:1rem;box-sizing:border-box;transition:border-color .2s}
-	input:focus, select:focus{outline:none;border-color:#4f46e5;ring:2px solid #4f46e5}
-	button{width:100%%;padding:12px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer;margin-top:10px;transition:background .2s}
-	button:hover{background:#4338ca}
+	input, select{width:100%;padding:12px;border:1px solid #d1d5db;border-radius:8px;font-size:1rem;box-sizing:border-box}
+	button{width:100%;padding:12px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer;margin-top:10px}
 </style></head>
 <body><div class="box">
-	<h2>欢迎回来</h2>
-	<p>请输入凭证以访问受限资源</p>
-	%s
+	<h2>欢迎回来</h2><p>请输入凭证以访问受限资源</p>
+	{{if .Error}}<div style="color:#ef4444;background:#fee2e2;padding:12px;border-radius:8px;margin-bottom:16px;font-size:0.9rem">{{.Error}}</div>{{end}}
 	<form method="POST">
-		<div class="field">
-			<label>用户名</label>
-			<input type="text" name="username" placeholder="输入用户名" required autofocus>
+		<div class="field"><label>用户名</label><input type="text" name="username" placeholder="输入用户名" required autofocus></div>
+		<div class="field"><label>密码</label><input type="password" name="password" placeholder="输入密码" required></div>
+		<div class="field"><label>保持登录时长</label>
+			<select name="duration"><option value="3600">1 小时</option><option value="86400">1 天</option><option value="604800" selected>1 周</option><option value="31536000">1 年</option></select>
 		</div>
-		<div class="field">
-			<label>密码</label>
-			<input type="password" name="password" placeholder="输入密码" required>
-		</div>
-		<div class="field">
-			<label>保持登录时长</label>
-			<select name="duration">
-				<option value="3600">1 小时</option>
-				<option value="86400">1 天</option>
-				<option value="604800" selected>1 周</option>
-				<option value="31536000">1 年</option>
-				<option value="2147483647">永久</option>
-			</select>
-		</div>
-		<input type="hidden" name="redirect" value="%s">
+		<input type="hidden" name="redirect" value="{{.Redirect}}">
 		<button type="submit">立即登录</button>
 	</form>
-</div></body></html>`, errHTML, redirect)
+</div></body></html>`
 
+func renderPublicLoginPage(c *gin.Context, errMsg, redirect string) {
+	tmpl := template.Must(template.New("vol-login").Parse(volLoginPageTmpl))
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.String(http.StatusOK, html)
+	tmpl.Execute(c.Writer, map[string]string{"Error": errMsg, "Redirect": redirect})
 }
 
 var _ = time.Now

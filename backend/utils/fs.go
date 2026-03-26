@@ -2,6 +2,7 @@ package utils
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,10 +46,40 @@ func GetFileRealDir(folderName string, relativePath string) (string, error) {
 
 	target := filepath.Join(volDir, cleanRel)
 
-	// 安全兜底判定 - 绝对目标路径必须是以指定的卷根目录开头
-	if !strings.HasPrefix(target, volDir) {
+	// 安全兜底判定 - 绝对目标路径必须是以指定的卷根目录+分隔符开头
+	// 补充分隔符防止 "data/vol123extra" 通过 "data/vol123" 前缀校验（符号混淆攻击）
+	volDirWithSep := volDir + string(filepath.Separator)
+	if target != volDir && !strings.HasPrefix(target, volDirWithSep) {
 		return "", errors.New("非法的系统跨卷访问行为")
 	}
 
 	return target, nil
+}
+
+// IsSafeRedirect 校验重定向目标是否为站内相对路径，防止开放重定向攻击
+// 仅允许 "/" 开头但非 "//" 开头的路径（// 会被浏览器解析为协议相对 URL）
+func IsSafeRedirect(u string) bool {
+	return strings.HasPrefix(u, "/") && !strings.HasPrefix(u, "//")
+}
+
+// HumanSize 将字节大小格式化为易读字符串 (KB, MB, GB...)
+func HumanSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// PtrToString 安全地将字符串指针转为字符串，nil 转为空串
+func PtrToString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

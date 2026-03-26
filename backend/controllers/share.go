@@ -82,10 +82,11 @@ func GenerateShare(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "该短码已被某个储存卷占用"})
 			return
 		}
-		meta.AccessURLKey = req.AccessURLKey
-	} else if meta.AccessURLKey == "" {
+		meta.AccessURLKey = &req.AccessURLKey
+	} else if meta.AccessURLKey == nil || *meta.AccessURLKey == "" {
 		// 临时分享或未提供自定义 Key 时，使用随机 Key
-		meta.AccessURLKey = utils.RandomString(8)
+		rk := utils.RandomString(8)
+		meta.AccessURLKey = &rk
 	}
 
 	// 处理过期时间
@@ -147,7 +148,7 @@ func ListShares(c *gin.Context) {
 			Name:         v.Name,
 			Path:         "/",
 			AccessMode:   string(v.AccessMode),
-			AccessURLKey: v.AccessURLKey,
+			AccessURLKey: utils.PtrToString(v.AccessURLKey),
 			ExpiresAt:    nil,
 			VolumeID:     v.ID,
 			VolumeName:   v.Name,
@@ -179,7 +180,7 @@ func ListShares(c *gin.Context) {
 			Name:         filepath.Base(f.FilePath),
 			Path:         f.FilePath,
 			AccessMode:   string(f.Permission),
-			AccessURLKey: f.AccessURLKey,
+			AccessURLKey: utils.PtrToString(f.AccessURLKey),
 			ExpiresAt:    f.ExpiresAt,
 			VolumeID:     f.VolumeID,
 			VolumeName:   vName,
@@ -208,7 +209,7 @@ func RevokeShare(c *gin.Context) {
 		}
 		db.DB.Model(&vol).Updates(map[string]interface{}{
 			"access_mode":    models.VolumeAccessPrivate,
-			"access_url_key": "",
+			"access_url_key": nil,
 		})
 	} else {
 		var meta models.FileMeta
@@ -226,7 +227,7 @@ func RevokeShare(c *gin.Context) {
 
 		db.DB.Model(&meta).Updates(map[string]interface{}{
 			"permission":     models.PermPrivate,
-			"access_url_key": "",
+			"access_url_key": nil,
 			"expires_at":     nil,
 		})
 	}
@@ -267,7 +268,7 @@ func UpdateShare(c *gin.Context) {
 	}
 
 	// 处理 Key 变更
-	if req.AccessURLKey != "" && req.AccessURLKey != meta.AccessURLKey {
+	if req.AccessURLKey != "" && (meta.AccessURLKey == nil || req.AccessURLKey != *meta.AccessURLKey) {
 		var count int64
 		db.DB.Model(&models.FileMeta{}).Where("access_url_key = ? AND id != ?", req.AccessURLKey, meta.ID).Count(&count)
 		if count > 0 {
@@ -279,7 +280,7 @@ func UpdateShare(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "该短码已被某个储存卷占用"})
 			return
 		}
-		meta.AccessURLKey = req.AccessURLKey
+		meta.AccessURLKey = &req.AccessURLKey
 	}
 
 	// 处理模式与密码

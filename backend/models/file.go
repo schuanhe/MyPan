@@ -26,6 +26,6 @@ type FileMeta struct {
 	Permission   PermissionType `gorm:"default:'private'"`
 	PasswordHash string         // 空表示无密码
 	// 新增分享字段
-	AccessURLKey string         `gorm:"uniqueIndex"` // 分享短链 Key
+	AccessURLKey *string        `gorm:"uniqueIndex"` // 分享短链 Key
 	ExpiresAt    *time.Time     // 失效时间，nil 表示永久
 }

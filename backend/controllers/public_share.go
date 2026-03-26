@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
 	"os"
@@ -45,6 +46,10 @@ func PublicFileIndex(c *gin.Context) {
 		cookie, err := c.Cookie(publicFileCookieName + "_" + key)
 		if err != nil || cookie != "ok" {
 			if c.Request.Method == "POST" {
+				if !utils.SharePasswordLimiter.Allow(c.ClientIP()) {
+					renderFilePasswordPage(c, key, "尝试次数过多，请稍后再试")
+					return
+				}
 				pwd := c.PostForm("password")
 				if bcrypt.CompareHashAndPassword([]byte(meta.PasswordHash), []byte(pwd)) == nil {
 					c.SetCookie(publicFileCookieName+"_"+key, "ok", 3600*24, "/", "", false, true)
@@ -88,8 +93,19 @@ func PublicFileIndex(c *gin.Context) {
 
 	if meta.Type == "directory" {
 		relPath := c.Query("path")
+		// 安全校验：防止通过 .. 绕过分享根目录
+		cleanRel := filepath.Clean(relPath)
+		if strings.HasPrefix(cleanRel, "..") {
+			c.String(http.StatusBadRequest, "非法请求路径")
+			return
+		}
 		// 最终物理路径是 meta.FilePath + relPath
-		fullRelPath := filepath.ToSlash(filepath.Join(meta.FilePath, relPath))
+		fullRelPath := filepath.ToSlash(filepath.Join(meta.FilePath, cleanRel))
+		// 确保 Join 后的路径依然在分享的元数据路径前缀下
+		if !strings.HasPrefix(fullRelPath, meta.FilePath) {
+			c.String(http.StatusForbidden, "越权读取阻断")
+			return
+		}
 		renderSharedFileList(c, vol, meta, fullRelPath, relPath)
 	} else {
 		renderSharedFileInfo(c, vol, meta)
@@ -136,7 +152,18 @@ func PublicFileDownload(c *gin.Context) {
 
 	targetRelPath := meta.FilePath
 	if meta.Type == "directory" && subPath != "" {
-		targetRelPath = filepath.Join(meta.FilePath, subPath)
+		// Clean the subPath to prevent directory traversal attempts
+		cleanSubPath := filepath.Clean(subPath)
+		if strings.HasPrefix(cleanSubPath, "..") {
+			c.String(http.StatusBadRequest, "非法请求路径")
+			return
+		}
+		targetRelPath = filepath.Join(meta.FilePath, cleanSubPath)
+		// Ensure the joined path is still within the shared root
+		if !strings.HasPrefix(targetRelPath, meta.FilePath) {
+			c.String(http.StatusForbidden, "越权下载阻断")
+			return
+		}
 	}
 
 	realPath, err := utils.GetFileRealDir(vol.FolderName, targetRelPath)
@@ -158,94 +185,111 @@ func PublicFileDownload(c *gin.Context) {
 	c.File(realPath)
 }
 
-func renderFilePasswordPage(c *gin.Context, key, errMsg string) {
-	errHTML := ""
-	if errMsg != "" {
-		errHTML = fmt.Sprintf(`<p style="color:red">%s</p>`, errMsg)
-	}
-	html := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>输入提取码</title>
+const filePasswordPageTmpl = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>输入提取码</title>
 <style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;background:#f3f4f6}
-.card{background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 6px rgba(0,0,0,0.1);text-align:center}</style></head>
-<body><div class="card"><h2>🔐 此分享受密码保护</h2>%s<form method="POST"><input type="password" name="password" placeholder="请输入密码" style="padding:10px;border-radius:6px;border:1px solid #ddd;width:200px"><button type="submit" style="padding:10px 20px;background:#4f46e5;color:#fff;border:none;border-radius:6px;margin-left:8px;cursor:pointer">访问</button></form></div></body></html>`, errHTML)
-	c.Header("Content-Type", "text/html")
-	c.String(http.StatusOK, html)
+.card{background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 6px rgba(0,0,0,0.1);text-align:center}
+input{padding:10px;border-radius:6px;border:1px solid #ddd;width:200px}
+button{padding:10px 20px;background:#4f46e5;color:#fff;border:none;border-radius:6px;margin-left:8px;cursor:pointer}</style></head>
+<body><div class="card"><h2>🔐 此分享受密码保护</h2>{{if .Error}}<p style="color:red">{{.Error}}</p>{{end}}
+<form method="POST"><input type="password" name="password" placeholder="请输入密码" required autofocus><button type="submit">访问</button></form></div></body></html>`
+
+func renderFilePasswordPage(c *gin.Context, key, errMsg string) {
+	tmpl := template.Must(template.New("f-pwd").Parse(filePasswordPageTmpl))
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	tmpl.Execute(c.Writer, map[string]string{"Error": errMsg})
 }
 
+const shareLoginPageTmpl = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>需要登录</title>
+<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;background:#f3f4f6}
+.card{background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 6px rgba(0,0,0,0.1);text-align:center}
+.btn{padding:10px 20px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:6px;display:inline-block;margin-top:16px}</style></head>
+<body><div class="card"><h2>🔒 访问受限</h2><p style="color:#666">{{.Msg}}</p><a href="{{.Url}}" class="btn">前往登录</a></div></body></html>`
+
 func renderLoginPage(c *gin.Context, msg string) {
-	// 获取当前完整路径以便登录后回跳
 	currentPath := c.Request.URL.Path
 	if c.Request.URL.RawQuery != "" {
 		currentPath += "?" + c.Request.URL.RawQuery
 	}
 	loginUrl := "/login?redirect=" + url.QueryEscape(currentPath)
-
-	// 简单的 HTML 提示并展示登录按钮
-	html := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>需要登录</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;background:#f3f4f6}
-.card{background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 6px rgba(0,0,0,0.1);text-align:center}</style></head>
-<body><div class="card"><h2>🔒 访问受限</h2><p style="color:#666">%s</p><a href="%s" style="padding:10px 20px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:6px;display:inline-block;margin-top:16px">前往登录</a></div></body></html>`, msg, loginUrl)
-	c.Header("Content-Type", "text/html")
-	c.String(http.StatusOK, html)
+	tmpl := template.Must(template.New("f-login").Parse(shareLoginPageTmpl))
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	tmpl.Execute(c.Writer, map[string]string{"Msg": msg, "Url": loginUrl})
 }
 
-func renderSharedFileInfo(c *gin.Context, vol models.Volume, meta models.FileMeta) {
-	name := filepath.Base(meta.FilePath)
-	size := humanSize(meta.Size)
-	html := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>%s - MyPan 分享</title>
+const fileInfoTmpl = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>{{.Name}} - MyPan 分享</title>
 <style>body{font-family:sans-serif;background:#f9fafb;display:flex;justify-content:center;padding-top:100px}
-.box{background:#fff;padding:40px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);max-width:500px;width:100%%;text-align:center}
+.box{background:#fff;padding:40px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);max-width:500px;width:100%;text-align:center}
 h1{font-size:1.25rem;margin-bottom:8px}
 .info{color:#6b7280;margin-bottom:24px}
 .btn{display:inline-block;padding:12px 24px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:8px;font-weight:500}</style></head>
-<body><div class="box"><h1>📄 %s</h1><div class="info">大小: %s</div><a href="/f/%s/download" class="btn">立即下载</a><a href="/f/%s/download?preview=1" style="margin-left:12px;color:#4f46e5" target="_blank">预览</a></div></body></html>`,
-		name, name, size, meta.AccessURLKey, meta.AccessURLKey)
-	c.Header("Content-Type", "text/html")
-	c.String(http.StatusOK, html)
+<body><div class="box"><h1>📄 {{.Name}}</h1><div class="info">大小: {{.Size}}</div><a href="/f/{{.Key}}/download" class="btn">立即下载</a><a href="/f/{{.Key}}/download?preview=1" style="margin-left:12px;color:#4f46e5" target="_blank">预览</a></div></body></html>`
+
+func renderSharedFileInfo(c *gin.Context, vol models.Volume, meta models.FileMeta) {
+	tmpl := template.Must(template.New("f-info").Parse(fileInfoTmpl))
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	tmpl.Execute(c.Writer, map[string]string{
+		"Name": filepath.Base(meta.FilePath),
+		"Size": utils.HumanSize(meta.Size),
+		"Key":  utils.PtrToString(meta.AccessURLKey),
+	})
+}
+
+const sharedFileListTmpl = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>文件夹分享 - MyPan</title>
+<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;background:#f3f4f6}
+.card{background:#fff;padding:32px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
+.breadcrumb{margin-bottom:20px;color:#6b7280}
+.breadcrumb a{color:#4f46e5;text-decoration:none}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:12px;border-bottom:2px solid #eee}
+td{padding:12px;border-bottom:1px solid #f9f9f9}</style></head>
+<body><div class="card"><h2>📁 文件夹分享: {{.Title}}</h2><div class="breadcrumb">{{.Breadcrumb}}</div>
+<table><thead><tr><th>名称</th><th>大小</th><th>操作</th></tr></thead><tbody>
+{{range .Items}}<tr>
+	<td>{{if .IsDir}}📁 <a href="/f/{{$.Key}}?path={{.Path}}">{{.Name}}</a>{{else}}📄 {{.Name}}{{end}}</td>
+	<td>{{.Size}}</td>
+	<td>{{if not .IsDir}}<a href="/f/{{$.Key}}/download?path={{.Path}}" style="color:#4f46e5">下载</a>{{end}}</td>
+</tr>{{end}}
+</tbody></table></div></body></html>`
+
+type sharedItem struct {
+	Name  string
+	Path  string
+	IsDir bool
+	Size  string
 }
 
 func renderSharedFileList(c *gin.Context, vol models.Volume, meta models.FileMeta, fullRelPath, subPath string) {
 	realDir, _ := utils.GetFileRealDir(vol.FolderName, fullRelPath)
 	entries, _ := os.ReadDir(realDir)
 
-	rows := ""
-	for _, e := range entries {
-		info, _ := e.Info()
-		name := e.Name()
-		currentSubPath := filepath.ToSlash(filepath.Join(subPath, name))
-
-		if e.IsDir() {
-			rows += fmt.Sprintf(`<tr><td>📁 <a href="/f/%s?path=%s">%s</a></td><td>-</td><td>-</td></tr>`,
-				meta.AccessURLKey, currentSubPath, name)
-		} else {
-			rows += fmt.Sprintf(`<tr><td>📄 %s</td><td>%s</td><td><a href="/f/%s/download?path=%s" style="color:#4f46e5">下载</a></td></tr>`,
-				name, humanSize(info.Size()), meta.AccessURLKey, currentSubPath)
-		}
-	}
-
-	breadcrumb := fmt.Sprintf(`<a href="/f/%s">根目录</a>`, meta.AccessURLKey)
+	breadcrumbHTML := template.HTML(fmt.Sprintf(`<a href="/f/%s">根目录</a>`, utils.PtrToString(meta.AccessURLKey)))
 	if subPath != "" {
 		parts := strings.Split(subPath, "/")
 		acc := ""
 		for _, p := range parts {
 			if p == "" { continue }
 			if acc == "" { acc = p } else { acc += "/" + p }
-			breadcrumb += fmt.Sprintf(` <span>&rsaquo;</span> <a href="/f/%s?path=%s">%s</a>`, meta.AccessURLKey, acc, p)
+			breadcrumbHTML += template.HTML(fmt.Sprintf(` <span>&rsaquo;</span> <a href="/f/%s?path=%s">%s</a>`, utils.PtrToString(meta.AccessURLKey), acc, p))
 		}
 	}
 
-	html := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>文件夹分享 - MyPan</title>
-<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;background:#f3f4f6}
-.card{background:#fff;padding:32px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
-.breadcrumb{margin-bottom:20px;color:#6b7280}
-.breadcrumb a{color:#4f46e5;text-decoration:none}
-table{width:100%%;border-collapse:collapse}
-th{text-align:left;padding:12px;border-bottom:2px solid #eee}
-td{padding:12px;border-bottom:1px solid #f9f9f9}
-</style></head>
-<body><div class="card"><h2>📁 文件夹分享: %s</h2><div class="breadcrumb">%s</div>
-<table><thead><tr><th>名称</th><th>大小</th><th>操作</th></tr></thead><tbody>%s</tbody></table></div></body></html>`,
-		filepath.Base(meta.FilePath), breadcrumb, rows)
+	items := make([]sharedItem, 0)
+	for _, e := range entries {
+		info, _ := e.Info()
+		items = append(items, sharedItem{
+			Name:  e.Name(),
+			Path:  filepath.ToSlash(filepath.Join(subPath, e.Name())),
+			IsDir: e.IsDir(),
+			Size:  utils.HumanSize(info.Size()),
+		})
+	}
 
-	c.Header("Content-Type", "text/html")
-	c.String(http.StatusOK, html)
+	tmpl := template.Must(template.New("f-list").Parse(sharedFileListTmpl))
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	tmpl.Execute(c.Writer, map[string]interface{}{
+		"Title":      filepath.Base(meta.FilePath),
+		"Breadcrumb": breadcrumbHTML,
+		"Items":      items,
+		"Key":        utils.PtrToString(meta.AccessURLKey),
+	})
 }

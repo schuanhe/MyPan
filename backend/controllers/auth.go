@@ -3,11 +3,13 @@ package controllers
 import (
 	"net/http"
 
+
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"mypan-backend/db"
 	"mypan-backend/middlewares"
 	"mypan-backend/models"
+	"mypan-backend/utils"
 )
 
 type UserRequest struct {
@@ -65,6 +67,13 @@ func Register(c *gin.Context) {
 
 // Login 会返回 JWT Token
 func Login(c *gin.Context) {
+	// IP 频率限制：60秒内同一 IP 最多允许 10 次登录尝试
+	clientIP := c.ClientIP()
+	if !utils.LoginLimiter.Allow(clientIP) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "登录尝试过于频繁，请稍后再试"})
+		return
+	}
+
 	var req UserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "账号和密码不能为空"})

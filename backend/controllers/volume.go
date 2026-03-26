@@ -46,7 +46,7 @@ func CreateVolume(c *gin.Context) {
 		Remark:       req.Remark,
 		OwnerID:      userID,
 		AccessMode:   models.VolumeAccessPrivate,
-		AccessURLKey: accessKey,
+		AccessURLKey: &accessKey,
 	}
 
 	if err := db.DB.Create(&vol).Error; err != nil {
@@ -155,7 +155,7 @@ func UpdateVolumeAccess(c *gin.Context) {
 	}
 
 	// 处理自定义 Key
-	if req.AccessURLKey != "" && req.AccessURLKey != vol.AccessURLKey {
+	if req.AccessURLKey != "" && req.AccessURLKey != utils.PtrToString(vol.AccessURLKey) {
 		// 检查唯一性
 		var count int64
 		db.DB.Model(&models.Volume{}).Where("access_url_key = ? AND id <> ?", req.AccessURLKey, vol.ID).Count(&count)
@@ -169,7 +169,7 @@ func UpdateVolumeAccess(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "该短码已被某个文件或文件夹分享占用"})
 			return
 		}
-		vol.AccessURLKey = req.AccessURLKey
+		vol.AccessURLKey = &req.AccessURLKey
 	}
 
 	db.DB.Save(&vol)
@@ -177,7 +177,7 @@ func UpdateVolumeAccess(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "访问权限已更新",
 		"accessMode": vol.AccessMode,
-		"accessURL":  "/s/" + vol.AccessURLKey,
+		"accessURL":  "/s/" + utils.PtrToString(vol.AccessURLKey),
 	})
 }
 
@@ -189,6 +189,6 @@ func serializeVolume(v models.Volume) map[string]interface{} {
 		"remark":       v.Remark,
 		"ownerID":      v.OwnerID,
 		"accessMode":   string(v.AccessMode),
-		"accessURLKey": v.AccessURLKey,
+		"accessURLKey": utils.PtrToString(v.AccessURLKey),
 	}
 }
