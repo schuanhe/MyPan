@@ -1,0 +1,33 @@
+services:
+  # ── 后端服务（Go + SQLite）───────────────────────────────
+  backend:
+    image: ${DOCKERHUB_USERNAME}/mypan-backend:latest
+    # 如需本地构建，注释上一行并取消下方注释：
+    # build: ./backend
+    container_name: mypan-backend
+    restart: unless-stopped
+    environment:
+      - GIN_MODE=release
+    volumes:
+      # SQLite 数据库和上传文件持久化存储
+      - mypan_data:/data
+    # 后端不对外暴露端口，只通过前端 nginx 内网访问
+    # 如需直接调试 API，取消下方注释：
+    # ports:
+    #   - "8080:8080"
+
+  # ── 前端服务（Flutter Web + Nginx）─────────────────────────
+  frontend:
+    image: ${DOCKERHUB_USERNAME}/mypan-frontend:latest
+    # 如需本地构建，注释上一行并取消下方注释：
+    # build: ./frontend
+    container_name: mypan-frontend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-80}:80"
+    depends_on:
+      - backend
+
+volumes:
+  mypan_data:
+    driver: local
