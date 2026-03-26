@@ -29,6 +29,9 @@ services:
       - "${PORT:-80}:80"
     depends_on:
       - backend
+    environment:
+      # 可在此处修改后端地址（内部网络 backend:8080 或外部地址）
+      - BACKEND_URL=http://mypan-backend:8080/api/
 
 volumes:
   mypan_data:

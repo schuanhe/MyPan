@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
@@ -10,7 +11,8 @@ class ApiService {
 
   ApiService._internal() {
     dio = Dio(BaseOptions(
-      baseUrl: 'http://localhost:8080/api', // 后端本地 API 入口
+      // 调试模式下使用本地地址，发布模式下使用相对路径（由 Nginx 转发）
+      baseUrl: kReleaseMode ? '/api' : 'http://localhost:8080/api',
       connectTimeout: const Duration(seconds: 5),
       receiveTimeout: const Duration(seconds: 15),
       responseType: ResponseType.json,

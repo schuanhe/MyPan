@@ -12,7 +12,12 @@ RUN flutter build web --release
 # 阶段2：Nginx
 FROM nginx:alpine
 COPY --from=builder /app/build/web /usr/share/nginx/html
-# 确保你仓库里有这个 nginx.conf
-COPY nginx.conf /etc/nginx/nginx.conf
+# 复制 Nginx 模板
+COPY nginx.conf.template /etc/nginx/templates/nginx.conf.template
+# 告知 Nginx 启动脚本将模板替换后输出到 /etc/nginx/nginx.conf
+ENV NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx
+# 默认后端地址（宿主机 localhost:8080 或容器网桥 backend:8080）
+ENV BACKEND_URL=http://mypan-backend:8080/api/
+
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
