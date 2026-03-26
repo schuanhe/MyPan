@@ -1,5 +1,5 @@
 # ─── 阶段1：构建 Flutter Web ────────────────────────────────
-FROM ghcr.io/cirruslabs/flutter:3.32.0 AS builder
+FROM ghcr.io/cirruslabs/flutter:3.41.5 AS builder
 
 WORKDIR /app
 
