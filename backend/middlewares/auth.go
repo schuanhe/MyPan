@@ -8,9 +8,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"os"
 )
 
-var JwtSecret = []byte("mypan_super_secret_key") // 在生产环境中建议使用环境变量配置
+var JwtSecret = []byte(getEnv("JWT_SECRET", "mypan_super_secret_key"))
+
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
+}
 
 // GenerateToken 生成具有指定有效期的 JWT Token
 func GenerateToken(userID uint, username, role string, expSeconds int64) (string, error) {

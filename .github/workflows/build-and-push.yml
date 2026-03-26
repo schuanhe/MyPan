@@ -1,42 +1,74 @@
-name: Build & Push Docker Images
+name: Build, Push Docker & Create Release Assets
 
 on:
   push:
     branches: [main, master]
-    tags: ["v*"]
+    tags: ["v*"] # 只有推标签时才会触发 Release 发布
   workflow_dispatch:
 
 permissions:
-  contents: write # 赋予创建 Release 的权限
+  contents: write # 必须，用于创建和写入 Release
 
 jobs:
-  build-backend:
-    name: Build & Release Backend
+  # ─────────────────────────────────────────────────────────────
+  # 单个 Job：完成所有编译、镜像推送和 Release 发布
+  # ─────────────────────────────────────────────────────────────
+  build-and-release:
+    name: Build All, Push Docker & Release Assets
     runs-on: ubuntu-latest
+    
     steps:
       - uses: actions/checkout@v4
 
-      # 1. 在虚拟机环境编译后端（为了拿到二进制文件发布）
+      # ─────────────────────────────────────────────────────────
+      # 1. 编译后端二进制 (CGO_ENABLED=0 为了更好的兼容性)
+      # ─────────────────────────────────────────────────────────
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25" # 匹配你的 go.mod
+          go-version: "1.25" # 匹配你的 go.mod 要求
 
-      - name: Build Binary
+      - name: Build Backend Binary
         working-directory: backend
         run: |
           go mod download
+          # 编译静态链接的二进制文件
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o mypan-server-linux-amd64 .
 
-      # 2. 推送 Docker 镜像
+      # ─────────────────────────────────────────────────────────
+      # 2. 编译前端 Web 并打包成 ZIP
+      # ─────────────────────────────────────────────────────────
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.6" # 匹配你本地的版本
+          channel: 'stable'
+          cache: true
+
+      - name: Build Frontend Web Bundle
+        working-directory: frontend
+        run: |
+          flutter pub get
+          flutter build web --release
+          # 打包 build/web 下的所有静态文件
+          cd build/web && zip -r ../../../frontend-web.zip .
+
+      # ─────────────────────────────────────────────────────────
+      # 3. 登录 Docker Hub (为两个镜像做准备)
+      # ─────────────────────────────────────────────────────────
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract Metadata
-        id: meta
+      - uses: docker/setup-buildx-action@v3
+
+      # ─────────────────────────────────────────────────────────
+      # 4. 构建并推送后端镜像
+      # ─────────────────────────────────────────────────────────
+      - name: Extract Backend Metadata
+        id: meta-backend
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/mypan-backend
@@ -45,55 +77,22 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - uses: docker/setup-buildx-action@v3
-      - name: Build & Push Docker
+      - name: Build & Push Backend Docker
         uses: docker/build-push-action@v6
         with:
           context: backend
           file: backend/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 3. 只有推标签时才上传到 Release
-      - name: Release Backend Binary
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: backend/mypan-server-linux-amd64
-          generate_release_notes: true
-
-  build-frontend:
-    name: Build & Release Frontend
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # 1. 编译 Flutter Web 并打包
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.38.6" # 匹配你本地的版本
-          channel: 'stable'
-          cache: true
-
-      - name: Build Web Bundle
-        working-directory: frontend
-        run: |
-          flutter pub get
-          flutter build web --release
-          cd build/web && zip -r ../../../frontend-web.zip .
-
-      # 2. 推送 Docker 镜像
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract Metadata
-        id: meta
+      # ─────────────────────────────────────────────────────────
+      # 5. 构建并推送前端镜像
+      # ─────────────────────────────────────────────────────────
+      - name: Extract Frontend Metadata
+        id: meta-frontend
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/mypan-frontend
@@ -102,20 +101,27 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - uses: docker/setup-buildx-action@v3
-      - name: Build & Push Docker
+      - name: Build & Push Frontend Docker
         uses: docker/build-push-action@v6
         with:
           context: frontend
           file: frontend/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 3. 只有推标签时才上传到 Release
-      - name: Release Frontend Web Zip
+      # ─────────────────────────────────────────────────────────
+      # 6. 【核心】只有推标签时，才统一发布 Release 文件
+      # ─────────────────────────────────────────────────────────
+      - name: Create GitHub Release and Upload Assets
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: frontend-web.zip
+          files: |
+            backend/mypan-server-linux-amd64
+            frontend-web.zip
+          generate_release_notes: true # 自动生成变更日志
+          draft: false
+          prerelease: false

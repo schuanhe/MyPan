@@ -8,6 +8,8 @@ services:
     restart: unless-stopped
     environment:
       - GIN_MODE=release
+      # 建议在生产环境中修改此密钥：
+      - JWT_SECRET=mypan_super_secret_key
     volumes:
       # SQLite 数据库和上传文件持久化存储
       - mypan_data:/data
