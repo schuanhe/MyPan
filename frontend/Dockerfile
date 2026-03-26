@@ -1,26 +1,18 @@
-# ─── 阶段1：构建 Flutter Web ────────────────────────────────
-FROM ghcr.io/cirruslabs/flutter:3.41.5 AS builder
+# 阶段1：构建 Flutter Web
+# 注意：如果 cirruslabs 镜像未更新，可使用 ghcr.io/cirruslabs/flutter:stable
+FROM ghcr.io/cirruslabs/flutter:3.38.0 AS builder
 
 WORKDIR /app
-
-# 先复制依赖文件（利用缓存）
-COPY pubspec.yaml pubspec.lock ./
-RUN flutter pub get
-
-# 复制全部源码并构建 Web Release 版
+# 修复权限问题（Flutter 镜像常见问题）
+USER root
 COPY . .
+RUN flutter pub get
 RUN flutter build web --release
 
-# ─── 阶段2：Nginx 静态文件服务 ──────────────────────────────
-# nginx:alpine 约 8MB，极致轻量
+# 阶段2：Nginx
 FROM nginx:alpine
-
-# 拷贝构建产物
 COPY --from=builder /app/build/web /usr/share/nginx/html
-
-# 拷贝自定义 nginx 配置（含反代后端 + SPA 路由）
+# 确保你仓库里有这个 nginx.conf
 COPY nginx.conf /etc/nginx/nginx.conf
-
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]
