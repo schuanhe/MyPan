@@ -1,5 +1,5 @@
 # 阶段1：编译
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 
 # CGO 需要 gcc
 RUN apt-get update && apt-get install -y gcc libc6-dev
