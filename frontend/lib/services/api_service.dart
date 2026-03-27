@@ -12,7 +12,9 @@ class ApiService {
   ApiService._internal() {
     dio = Dio(BaseOptions(
       // 调试模式下使用本地地址，发布模式下使用相对路径（由 Nginx 转发）
-      baseUrl: kReleaseMode ? '/api' : 'http://localhost:8080/api',
+      // baseUrl: kReleaseMode ? '/api' : 'http://localhost:8080/api',
+      baseUrl: '/api',
+      
       connectTimeout: const Duration(seconds: 5),
       receiveTimeout: const Duration(seconds: 15),
       responseType: ResponseType.json,
